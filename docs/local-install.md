@@ -7,6 +7,10 @@ or Sentence Transformers. The API can run in a separate Python 3.13 environment
 without the local extra. Keep one API writer and one bot runtime per private state
 directory.
 
+The bot also requires FFmpeg with the libopus encoder on PATH for local audio
+validation and conversion. On Ubuntu, install it with `sudo apt-get install ffmpeg`.
+This runs locally and does not contact a speech provider.
+
 Install reviewed wheels for all four packages, with release SHA256 verification.
 Use an isolated bot environment; do not replace an existing API environment.
 For example, when all wheels are in a reviewed `release/` directory:

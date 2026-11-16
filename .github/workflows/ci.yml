@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install the offline audio converter
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.7.11'
