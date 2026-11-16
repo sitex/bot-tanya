@@ -61,6 +61,11 @@ read accepts up to three stable references. A mail question uses at most two mod
 calls; an ordinary answer uses one. The final phase has no tools. There is no
 automatic pagination, attachment download, URL fetch, sending or modification.
 Mail is read only for a current owner request or a clear selection follow-up.
+Displayed positions remain bound to their original message IDs. An unambiguous
+English/Russian ordinal in an already-authorized read is resolved locally rather
+than guessed from similar subjects. Reading a subset retains the original page
+order; compatible older shortened selections are rebuilt from completed cached
+pages of the same origin, without reading Gmail or generating again.
 
 Each model phase and Google sub-operation is durably reserved before dispatch.
 The exact model payload and completed result are saved. Cancellation fences

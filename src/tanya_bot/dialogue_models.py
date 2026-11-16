@@ -56,6 +56,7 @@ class MailSource(DialogueModel):
     date: Annotated[str, Field(max_length=128)]
     text: Annotated[str, Field(max_length=4000)]
     truncated: bool
+    position: Annotated[int | None, Field(ge=1, le=5)] = None
 
 
 class MailResult(DialogueModel):

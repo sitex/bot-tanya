@@ -25,7 +25,30 @@ def recent_selection(
         and root.selection.conversation_id == conversation
         and selection_valid(root.selection, now)
     ]
-    return max(candidates, key=lambda item: item.accessed_at, default=None)
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda item: item.accessed_at)
+    lineage = sorted(
+        (item for item in candidates if item.created_at == latest.created_at),
+        key=lambda item: item.accessed_at,
+    )
+    base = max(lineage, key=lambda item: len(item.result.sources))
+    updated = {source.ref: source for source in base.result.sources}
+    for item in lineage:
+        for source in item.result.sources:
+            previous = updated.get(source.ref)
+            if previous is not None and previous.message_id == source.message_id:
+                updated[source.ref] = source
+    sources = tuple(
+        updated[source.ref].model_copy(update={"position": position})
+        for position, source in enumerate(base.result.sources, start=1)
+    )
+    return latest.model_copy(
+        update={
+            "root_id": base.root_id,
+            "result": base.result.model_copy(update={"sources": sources}),
+        }
+    )
 
 
 def selection_valid(selection: MailSelection, now: float) -> bool:

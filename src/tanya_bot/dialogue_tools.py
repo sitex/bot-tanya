@@ -19,6 +19,7 @@ from tanya_bot.dialogue_models import (
     MailSearch,
     MailSource,
 )
+from tanya_bot.dialogue_references import bound_refs
 from tanya_bot.dialogue_sources import selection_valid
 from tanya_bot.dialogue_store import DialogueStore
 from tanya_bot.errors import ServiceError
@@ -102,13 +103,16 @@ class MailTools:
                     self._read_current(root)
                     selected = root.selection.result.sources if root.selection else ()
                     mapping = {item.ref: item.message_id for item in selected}
-                    if len(set(refs)) != len(refs) or any(
-                        ref not in mapping for ref in refs
+                    resolved = bound_refs(
+                        root.turn.chat.messages[-1].content, refs, selected
+                    )
+                    if len(set(resolved)) != len(resolved) or any(
+                        ref not in mapping for ref in resolved
                     ):
                         raise ServiceError(
                             422, "mail_reference_invalid", "Select a current message."
                         )
-                    ids = tuple(mapping[ref] for ref in refs)
+                    ids = tuple(mapping[ref] for ref in resolved)
                     preview_limit = 4000
                 case _:
                     assert_never(call.action)
@@ -127,6 +131,18 @@ class MailTools:
                     date=preview.date,
                     text=preview.text,
                     truncated=preview.truncated,
+                    position=next(
+                        (
+                            item.position or number
+                            for number, item in enumerate(
+                                root.selection.result.sources, start=1
+                            )
+                            if item.message_id == message_id
+                        ),
+                        index + 1,
+                    )
+                    if isinstance(call.action, MailRead) and root.selection
+                    else index + 1,
                 )
                 remaining = max(
                     0,

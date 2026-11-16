@@ -33,21 +33,34 @@ def assembled(root: DialogueRoot, receipt: PhaseReceipt) -> DialogueRoot:
     selection = root.selection
     if root.tool_result is not None:
         call = phase_for(root, "decide").receipt
+        selected_read = bool(
+            selection and call and call.tool and call.tool.action.name == "gmail_read"
+        )
         origin = (
             selection.created_at
-            if selection
-            and call
-            and call.tool
-            and call.tool.action.name == "gmail_read"
+            if selection and selected_read
             else root.tool_result.retrieved_at
         )
+        result = root.tool_result
+        if selection and selected_read:
+            refreshed = {source.ref: source for source in result.sources}
+            result = selection.result.model_copy(
+                update={
+                    "sources": tuple(
+                        refreshed.get(source.ref, source)
+                        for source in selection.result.sources
+                    ),
+                }
+            )
         selection = MailSelection(
             owner_id=root.owner_id,
             conversation_id=root.conversation_id,
-            root_id=root.turn.chat.request_id,
+            root_id=selection.root_id
+            if selection and selected_read
+            else root.turn.chat.request_id,
             created_at=origin,
             accessed_at=time.time(),
-            result=root.tool_result,
+            result=result,
         )
     if selection is not None:
         selection = selection.model_copy(
