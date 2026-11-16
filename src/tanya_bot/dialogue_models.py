@@ -1,9 +1,10 @@
 """Versioned mail dialogue boundaries, separate from legacy request bytes."""
 
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 from tanya_bot.conversation_memory import JSONValue
 from tanya_bot.schemas import FrozenModel
@@ -15,7 +16,9 @@ type PhaseKind = Literal["decide", "final"]
 class DialogueModel(FrozenModel):
     """Reject undeclared wire fields at the new protocol boundary."""
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        frozen=True, extra="forbid", strict=True
+    )
 
 
 class MailSearch(DialogueModel):
@@ -87,6 +90,14 @@ class PhaseReceipt(DialogueModel):
     output: Annotated[tuple[dict[str, JSONValue], ...], Field(max_length=32)]
     answer: TurnAnswer | None = None
     tool: MailCall | None = None
+
+    @model_validator(mode="after")
+    def _single_outcome(self) -> Self:
+        if (self.answer is None) == (self.tool is None):
+            code = "phase_outcome"
+            message = "Expected one phase outcome"
+            raise PydanticCustomError(code, message)
+        return self
 
 
 class DialoguePhase(DialogueModel):
