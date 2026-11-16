@@ -1,0 +1,75 @@
+[project]
+name = "bot-tanya"
+version = "0.1.0"
+description = "A private, modular Telegram companion with local memory"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "anyio>=4.9,<5", "fastapi>=0.115,<1",
+    "httpx2[http2,brotli,zstd]>=2.16,<3", "pillow>=12,<13",
+    "pydantic>=2.10,<3", "pydantic-settings>=2.7,<3",
+    "telethon>=1.42,<2", "uvicorn>=0.34,<1",
+    "tanya-memory==0.1.0", "tanya-persona==0.1.0", "tanya-gmail==0.1.0",
+]
+
+[project.scripts]
+tanya-bot = "tanya_bot.telegram_runtime:main"
+
+[project.optional-dependencies]
+local = [
+    "tanya-memory[local]==0.1.0",
+    "torch==2.9.1+cpu; sys_platform == 'linux'",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+tanya-memory = { git = "https://github.com/sitex/tanya-memory", rev = "151a903401c0b4c5924bf4665b41688c0f07d00d" }
+tanya-persona = { git = "https://github.com/sitex/tanya-persona", rev = "6ba6437aab845324cab5c07a60e69c99647e5ad0" }
+tanya-gmail = { git = "https://github.com/sitex/tanya-gmail", rev = "505dcb25e76cbb2b1a46df8f58f77a145316eca0" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tanya_bot"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"THIRD_PARTY.md" = "tanya_bot/THIRD_PARTY.md"
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/typings", "/README.md", "/docs", "/LICENSE", "/THIRD_PARTY.md", "/pyproject.toml", "/uv.lock", "/.gitignore"]
+exclude = ["**/__pycache__", "**/*.pyc"]
+
+[dependency-groups]
+dev = ["basedpyright==1.40.2", "pytest==9.2.0", "ruff==0.17.5"]
+
+[tool.basedpyright]
+typeCheckingMode = "all"
+pythonVersion = "3.12"
+include = ["src", "tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "ISC001", "D203", "D213", "CPY001"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "PLR2004", "D", "ARG001"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+filterwarnings = ["error"]

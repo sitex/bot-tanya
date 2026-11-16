@@ -1,0 +1,24 @@
+name: Offline checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.7.11'
+          python-version: '3.12'
+      - run: uv sync --locked
+      - run: uv run --locked ruff check src tests
+      - run: uv run --locked ruff format --check src tests
+      - run: uv run --locked basedpyright
+      - run: uv run --locked pytest -q
+      - run: uv build --no-sources
