@@ -2,28 +2,25 @@
 
 from __future__ import annotations
 
-import os
-import stat
 import unicodedata
-from contextlib import ExitStack
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, assert_never, final
 
 import anyio
-from pydantic import ValidationError
 from tanya_gmail import (
     ConnectionStatus,
     ErrorCode,
-    FileTokenStore,
     GmailClient,
-    GmailConfig,
     GmailError,
 )
 
+from .gmail_account import GmailAccount
+from .gmail_config import load_config
 from .i18n import localize
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import httpx2
 
 _ACTIONS: Final = (
@@ -41,8 +38,6 @@ _HELP: Final = (
     "Gmail commands: /gmail status, /gmail connect, /gmail list [query], "
     "/gmail read ID, /gmail disconnect."
 )
-_MAX_CONFIG: Final = 16384
-_PRIVATE_MODE: Final = 0o600
 _ARGUMENT_PARTS: Final = 3
 type GmailAction = Literal["connect", "disconnect", "list", "read"]
 _COMMANDS: Final[tuple[GmailAction, ...]] = ("connect", "disconnect", "list", "read")
@@ -54,48 +49,6 @@ class GmailOutput:
 
     text: str
     actions: tuple[str, ...] = ()
-
-
-def _config(path: Path) -> GmailConfig:
-    """Read bounded private JSON through descriptors without following symlinks."""
-    if not path.is_absolute() or ".." in path.parts or path == Path("/"):
-        raise GmailError(ErrorCode.UNSAFE_STORAGE)
-    try:
-        with ExitStack() as stack:
-            directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
-            _ = stack.callback(os.close, directory)
-            for part in path.parts[1:-1]:
-                directory = os.open(
-                    part,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=directory,
-                )
-                _ = stack.callback(os.close, directory)
-            descriptor = os.open(
-                path.name,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                dir_fd=directory,
-            )
-            stream = stack.enter_context(os.fdopen(descriptor, "rb"))
-            info = os.fstat(stream.fileno())
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != _PRIVATE_MODE
-                or info.st_nlink != 1
-                or info.st_size > _MAX_CONFIG
-            ):
-                raise GmailError(ErrorCode.UNSAFE_STORAGE)
-            data = stream.read(_MAX_CONFIG + 1)
-            if len(data) > _MAX_CONFIG:
-                raise GmailError(ErrorCode.UNSAFE_STORAGE)
-            return GmailConfig.model_validate_json(data)
-    except FileNotFoundError:
-        raise
-    except OSError:
-        raise GmailError(ErrorCode.UNSAFE_STORAGE) from None
-    except ValidationError:
-        raise GmailError(ErrorCode.INVALID_INPUT) from None
 
 
 def _plain(text: str, limit: int) -> str:
@@ -124,11 +77,9 @@ class GmailCommands:
         transport: httpx2.BaseTransport | None = None,
     ) -> None:
         """Store paths and a transport without opening configuration or credentials."""
-        self._config_path = config_path
-        self._token_directory = token_directory
-        self._transport = transport
-        self._client: GmailClient | None = None
-        self._lock = anyio.Lock()
+        self.account: GmailAccount = GmailAccount(
+            config_path, token_directory, transport
+        )
 
     @staticmethod
     def is_command(text: str) -> bool:
@@ -137,7 +88,7 @@ class GmailCommands:
 
     async def handle(self, text: str, language: str) -> GmailOutput:
         """Execute one explicit gesture off the event loop under the account lock."""
-        async with self._lock:
+        async with self.account.lock:
             return await anyio.to_thread.run_sync(self._handle, text, language)
 
     def _handle(self, text: str, language: str) -> GmailOutput:
@@ -167,13 +118,7 @@ class GmailCommands:
             return GmailOutput(localize(_HELP, language), _ACTIONS)
         if command == "status":
             return self._status(language)
-        if self._client is None:
-            self._client = GmailClient(
-                _config(self._config_path),
-                FileTokenStore(self._token_directory),
-                transport=self._transport,
-            )
-        client = self._client
+        client = self.account.client()
         action: GmailAction | None = next(
             (item for item in _COMMANDS if item == command),
             None,
@@ -188,9 +133,11 @@ class GmailCommands:
                 client.disconnect(revoke=False)
                 message = "Gmail local credentials were removed."
             case "list":
-                return self._list(client, argument, language)
+                return self._list(self.account.restore(), argument, language)
             case "read":
-                preview = client.read_message(argument, preview_chars=2400)
+                preview = self.account.restore().read_message(
+                    argument, preview_chars=2400
+                )
                 lines = [
                     localize("Gmail plain-text preview (untrusted content):", language)
                 ]
@@ -210,11 +157,11 @@ class GmailCommands:
         return GmailOutput(localize(message, language), _ACTIONS)
 
     def _status(self, language: str) -> GmailOutput:
-        if self._client is None:
-            _ = _config(self._config_path)
+        if self.account.cached is None:
+            _ = load_config(self.account.config)
         connected = (
-            self._client is not None
-            and self._client.status() is ConnectionStatus.CONNECTED
+            self.account.cached is not None
+            and self.account.cached.status() is ConnectionStatus.CONNECTED
         )
         message = "Gmail is connected." if connected else "Gmail is disconnected."
         return GmailOutput(localize(message, language), _ACTIONS)

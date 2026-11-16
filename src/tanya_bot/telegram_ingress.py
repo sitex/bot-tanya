@@ -27,6 +27,19 @@ MAX_VOICE_BYTES: Final = 5 * 1024 * 1024
 MAX_VOICE_SECONDS: Final = 120
 MAX_TEXT: Final = 16000
 LOGGER: Final = logging.getLogger(__name__)
+CAPACITY_NOTICE: Final = (
+    "Storage is full or reserved for unresolved requests. No new chat request was sent."
+)
+MESSAGE_HELD: Final = "/recover will check the cache. The request will not be repeated."
+CALLBACK_HELD: Final = "Action stopped. /recover — check the cache without repeating."
+
+
+def _failure_notice(code: str, fallback: str) -> str:
+    return (
+        CAPACITY_NOTICE
+        if code in {"reply_capacity_admission", "request_capacity", "update_capacity"}
+        else fallback
+    )
 
 
 class TelegramIngress:
@@ -142,10 +155,12 @@ class TelegramIngress:
                 await self.controller.cancel_pending()
             with scope:
                 await self._message(event, f"{event.chat_id}:{event.id}")
+        except CoreError as error:
+            LOGGER.warning("telegram_operation_held:%s", type(error).__name__)
+            await self._notice(_failure_notice(error.code, MESSAGE_HELD))
         except (
             ServiceError,
             GatewayFailure,
-            CoreError,
             httpx2.HTTPError,
             RPCError,
             OSError,
@@ -153,9 +168,7 @@ class TelegramIngress:
             ValidationError,
         ) as error:
             LOGGER.warning("telegram_operation_held:%s", type(error).__name__)
-            await self._notice(
-                "/recover will check the cache. The request will not be repeated."
-            )
+            await self._notice(MESSAGE_HELD)
         finally:
             if self.active is scope:
                 self.active = None
@@ -191,10 +204,12 @@ class TelegramIngress:
                         data=event.data.decode("utf-8"),
                     )
                 )
+        except CoreError as error:
+            LOGGER.warning("telegram_callback_held:%s", type(error).__name__)
+            await self._notice(_failure_notice(error.code, CALLBACK_HELD))
         except (
             ServiceError,
             GatewayFailure,
-            CoreError,
             httpx2.HTTPError,
             RPCError,
             OSError,
@@ -203,9 +218,7 @@ class TelegramIngress:
             UnicodeError,
         ) as error:
             LOGGER.warning("telegram_callback_held:%s", type(error).__name__)
-            await self._notice(
-                "Action stopped. /recover — check the cache without repeating."
-            )
+            await self._notice(CALLBACK_HELD)
         finally:
             if self.active is scope:
                 self.active = None

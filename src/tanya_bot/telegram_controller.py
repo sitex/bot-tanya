@@ -7,6 +7,7 @@ from uuid import UUID
 import anyio
 from tanya_memory import maintenance_due
 
+from tanya_bot.i18n import localize
 from tanya_bot.memory_runtime import MemoryCoordinator, maintained
 from tanya_bot.schemas import ChatRequest, ChatResponse
 from tanya_bot.telegram_completion import ReplyCompletion
@@ -30,6 +31,7 @@ from tanya_bot.telegram_store import CoreError, StateStore
 from tanya_bot.telegram_voice_inputs import reserve_input, voice_text_allowed
 
 if TYPE_CHECKING:
+    from tanya_bot.dialogue_runner import DialogueRunner
     from tanya_bot.telegram_gmail import GmailFlow
 
 
@@ -53,6 +55,7 @@ class TelegramController:
         self.memory: MemoryCoordinator | None = None
         self.lock: anyio.Lock = anyio.Lock()
         self.gmail: GmailFlow | None = None
+        self.dialogue: DialogueRunner | None = None
 
     def accepts(self, sender_id: int, chat_id: int, *, private: bool) -> bool:
         """Root can use this same gate before downloading or transcribing media."""
@@ -82,6 +85,8 @@ class TelegramController:
             with self.store.exclusive():
                 session = self._session()
                 session.save(cancelled_state(session.state))
+                if self.dialogue is not None:
+                    self.dialogue.cancel()
 
     async def begin_text(self, event: IncomingText) -> ChatRequest | None:
         """Reserve BEFORE a root-managed external call; None means do not generate."""
@@ -157,9 +162,13 @@ class TelegramController:
     async def _begin(
         self, session: CoreSession, event: IncomingText
     ) -> ChatRequest | None:
+        session.require_reply_capacity()
         try:
             command = local_command(session.state, event.text)
             if command is not None:
+                session.require_reply_capacity(
+                    text=localize(command.text, command.state.settings.language)
+                )
                 session.save(command.state)
                 await session.say(
                     command.text, command.actions, setting_field=command.setting_field
@@ -181,17 +190,24 @@ class TelegramController:
                 return None
             request = build_request(session.state, event.text)
         except CoreError as error:
+            if error.code == "reply_capacity_admission":
+                raise
             await session.say(f"Input error: {error.code}. /cancel — cancel.")
             return None
         return request
 
-    @staticmethod
-    def _reserve(session: CoreSession, pending: PendingChat) -> None:
+    def _reserve(self, session: CoreSession, pending: PendingChat) -> None:
         if len(session.state.requests) >= REQUEST_CAPACITY:
             raise CoreError(code="request_capacity")
+        session.require_reply_capacity()
+        reserved = (
+            pending.model_copy(update={"dialogue_version": 3})
+            if self.dialogue is not None and pending.context is not None
+            else pending
+        )
         session.save(
             session.state.model_copy(
-                update={"requests": (*session.state.requests, pending)}
+                update={"requests": (*session.state.requests, reserved)}
             )
         )
 
@@ -240,4 +256,6 @@ class TelegramController:
             return
         async with self.lock:
             with self.store.exclusive():
-                await handle_callback(self._session(), event, self.voice)
+                session = self._session()
+                session.require_reply_capacity()
+                await handle_callback(session, event, self.voice)

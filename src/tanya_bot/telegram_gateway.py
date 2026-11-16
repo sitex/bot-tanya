@@ -1,8 +1,9 @@
 """Bridge the existing companion API with strictly local receipt recovery."""
 
+from __future__ import annotations
+
 from http import HTTPStatus
-from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import httpx2
 
@@ -12,10 +13,15 @@ from tanya_bot.errors import ServiceError
 from tanya_bot.provider import http_transport
 from tanya_bot.receipts import exclusive_store, lookup
 from tanya_bot.schemas import ChatRequest, ChatResponse, ErrorResponse
-from tanya_bot.telegram_store import StateStore
 from tanya_bot.turns import TurnRequest, TurnResponse
 
 CHAT_URL: Final = "http://127.0.0.1:8758/v1/chat"
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from tanya_bot.dialogue_runner import DialogueRunner
+    from tanya_bot.telegram_store import StateStore
 
 
 class LocalCompanionGateway:
@@ -32,6 +38,26 @@ class LocalCompanionGateway:
         self.directory: Path = directory
         self.transport: httpx2.AsyncBaseTransport | None = transport
         self.core: StateStore | None = core
+        self.dialogue: DialogueRunner | None = None
+
+    def _dialogue(self, request: ChatRequest) -> DialogueRunner | None:
+        if self.core is None:
+            return None
+        pending = next(
+            (
+                item
+                for item in self.core.load().requests
+                if item.request.request_id == request.request_id
+            ),
+            None,
+        )
+        if pending is None or pending.dialogue_version is None:
+            return None
+        if self.dialogue is None:
+            raise ServiceError(
+                503, "dialogue_unavailable", "The v3 runner is unavailable."
+            )
+        return self.dialogue
 
     def _turn(self, request: ChatRequest) -> TurnRequest | None:
         if self.core is None:
@@ -57,6 +83,9 @@ class LocalCompanionGateway:
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         """Send exactly once; an unresolved core reservation survives any error."""
+        dialogue = self._dialogue(request)
+        if dialogue is not None:
+            return await dialogue.chat(request)
         token = client_token(Settings())
         if token is None:
             raise ServiceError(503, "client_token_missing", "Configure the local API.")
@@ -83,6 +112,9 @@ class LocalCompanionGateway:
 
     async def recover(self, request: ChatRequest) -> ChatResponse | None:
         """Read the receipt only; this method cannot issue an HTTP request."""
+        dialogue = self._dialogue(request)
+        if dialogue is not None:
+            return dialogue.recover(request)
         turn = self._turn(request)
         directory = self.directory / "turns-v2" if turn else self.directory
         with exclusive_store(directory) as connection:

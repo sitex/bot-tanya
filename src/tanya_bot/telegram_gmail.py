@@ -1,5 +1,6 @@
 """Explicit Gmail operations release bot state locks while the adapter works."""
 
+from collections.abc import Awaitable, Callable
 from typing import Final
 
 import anyio
@@ -29,12 +30,15 @@ class GmailFlow:
         transport: Transport,
         lock: anyio.Lock,
         commands: GmailCommands,
+        *,
+        cancel: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Share the controller transaction lock and one account adapter instance."""
         self.store: StateStore = store
         self.transport: Transport = transport
         self.lock: anyio.Lock = lock
         self.commands: GmailCommands = commands
+        self.cancel: Callable[[], Awaitable[None]] | None = cancel
 
     def _session(self) -> CoreSession:
         return CoreSession(self.store, self.transport, voice=False)
@@ -52,6 +56,7 @@ class GmailFlow:
                     return True
                 conversation = session.state.conversation_id
                 language = session.state.settings.language
+                session.require_reply_capacity()
         await self._execute(event.text, conversation, language)
         return True
 
@@ -67,10 +72,13 @@ class GmailFlow:
                     return True
                 conversation = session.state.conversation_id
                 language = session.state.settings.language
+                session.require_reply_capacity()
         await self._execute(command, conversation, language)
         return True
 
     async def _execute(self, command: str, conversation: int, language: str) -> None:
+        if command == "/gmail disconnect" and self.cancel is not None:
+            await self.cancel()
         output = await self.commands.handle(command, language)
         async with self.lock:
             with self.store.exclusive():

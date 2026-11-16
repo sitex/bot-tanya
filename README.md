@@ -3,6 +3,12 @@
 A personal Telegram companion composed of independently reusable Python packages.
 English is the default interface language; Russian is available in Settings.
 
+With a separately authorized personal Gmail account, the owner can ask about
+recent mail in ordinary conversation, search messages and follow up on stable
+message references. Reading is readonly; reply drafts stay in chat. Mail sources
+are kept separate from automatic personal memories. No browser login occurs at
+bot startup.
+
 This project is an independent implementation. It contains no Tolan application
 assets, private prompts, personal conversations, credentials, or subscription API.
 

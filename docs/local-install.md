@@ -52,7 +52,10 @@ identities are not usable production configuration. The companion endpoint is
 loopback HTTP on port 8758; start the standalone app with
 `uvicorn tanya_bot.app:app --host 127.0.0.1 --port 8758`, or include `turn_router`
 in the existing compatible API process. Do not run two API writers on the same
-receipt directory.
+receipt directory. For the installed dialogue runner, include
+`tanya_bot.dialogue_api.dialogue_router` alongside `turn_router` in an existing
+API process. New dialogue turns require the matching bot and API package version;
+legacy held requests retain their original route and cache-only recovery.
 
 Without the model directory or local extra, retrieval reports lexical mode.
 Prepare a local snapshot using `tanya-memory-prepare` according to that package's
@@ -69,8 +72,11 @@ Gmail configuration uses the `tanya-gmail` configuration schema: expected primar
 email, desktop client ID and external client secret where applicable. Google
 authorization is an explicit host-browser operation performed separately. Bot
 connect never opens a browser. Status does not restore or verify credentials.
+An explicit mailbox request in chat, or a `/gmail list` or `/gmail read` gesture,
+may restore the saved readonly grant and verify the account before reading.
 No message access occurs until the adapter verifies the exact configured account.
-Disconnect removes local credentials without revoking remotely.
+Disconnect removes local credentials without revoking remotely and invalidates
+transient dialogue selections. An ordinary greeting performs no Gmail I/O.
 
 For offline development from the staging package, use existing sibling tools:
 

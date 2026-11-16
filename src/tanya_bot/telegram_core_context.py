@@ -22,6 +22,7 @@ from tanya_bot.turns import TurnResponse
 
 HISTORY_CONTEXT: Final = 32
 MIN_TERM_LENGTH: Final = 2
+MEMORY_RESERVATION: Final = 2000
 
 
 def context_history(
@@ -40,6 +41,8 @@ def build_request(
     state: TelegramState,
     text: str,
     retrieved: tuple[str, ...] | None = None,
+    *,
+    budget: int = CONTEXT_CHARACTERS,
 ) -> ChatRequest:
     """Keep latest input intact, rank memories like iOS and trim old history."""
     settings = state.settings
@@ -47,7 +50,7 @@ def build_request(
         len(settings.name) + len(settings.language) + settings.profile.context_size()
     )
     fixed += len(state.context.summary.text) if retrieved is not None else 0
-    available = CONTEXT_CHARACTERS - fixed - len(text)
+    available = min(budget, CONTEXT_CHARACTERS) - fixed - len(text)
     if available < 0 or not text.strip():
         raise CoreError(code="input_too_long_or_empty")
     terms = {term.casefold() for term in text.split() if len(term) > MIN_TERM_LENGTH}
@@ -65,9 +68,13 @@ def build_request(
         )
         selected = _recent_messages(state, available - sum(map(len, memories)))
     else:
-        selected = _recent_messages(state, available)
+        reserved = _pack_indices(retrieved, min(MEMORY_RESERVATION, available))
+        selected = _recent_messages(
+            state, available - sum(len(retrieved[index]) for index in reserved)
+        )
         remaining = available - sum(len(message.content) for message in selected)
-        memories = _fit_memories(retrieved, remaining)
+        packed = _pack_indices(retrieved, remaining, reserved)
+        memories = tuple(retrieved[index] for index in packed)
     return ChatRequest(
         request_id=uuid4(),
         messages=(*selected, Message(role="user", content=text)),
@@ -84,6 +91,18 @@ def _fit_memories(memories: tuple[str, ...], budget: int) -> tuple[str, ...]:
     while sum(map(len, selected)) > budget:
         _ = selected.pop()
     return tuple(selected)
+
+
+def _pack_indices(
+    memories: tuple[str, ...], budget: int, reserved: tuple[int, ...] = ()
+) -> tuple[int, ...]:
+    selected = set(reserved)
+    remaining = budget - sum(len(memories[index]) for index in reserved)
+    for index, text in enumerate(memories):
+        if index not in selected and len(text) <= remaining:
+            selected.add(index)
+            remaining -= len(text)
+    return tuple(sorted(selected))
 
 
 def _recent_messages(state: TelegramState, budget: int) -> tuple[Message, ...]:
@@ -135,7 +154,11 @@ def apply_response(
         or len(response.reply) > CONTEXT_CHARACTERS
     ):
         raise CoreError(code="invalid_response")
-    memories = _updated_memories(state, pending, response)
+    memories = (
+        state.memories
+        if pending.mail_tainted
+        else _updated_memories(state, pending, response)
+    )
     user = Entry(text=pending.request.messages[-1].content)
     assistant = Entry(text=response.reply)
     context = state.context
@@ -164,6 +187,14 @@ def apply_response(
     removed = any(
         entry.id not in {item.id for item in memories} for entry in state.memories
     )
+    if pending.mail_tainted:
+        context = state.context.model_copy(
+            update={
+                "summary": state.context.summary.model_copy(
+                    update={"coverage_gap": True}
+                ),
+            }
+        )
     if tuple(memories) != state.memories:
         changed = invalidate(context)
         context = (
@@ -180,6 +211,11 @@ def apply_response(
             "context": context,
             "history_barrier": tuple(item.id for item in history)
             if removed
-            else state.history_barrier,
+            else tuple(
+                item.id
+                for item in history
+                if item.id in state.history_barrier
+                or (pending.mail_tainted and item.id in {user.id, assistant.id})
+            ),
         }
     )

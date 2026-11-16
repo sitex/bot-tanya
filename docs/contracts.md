@@ -1,7 +1,8 @@
 # Behavior contracts
 
-`create_app` serves existing `/v1/chat` plus `/v2/telegram/chat`. The additive v2
-router can be imported into an existing app without migrating its v1 routes.
+`create_app` serves `/v1/chat`, `/v2/telegram/chat`, and the additive
+`/v3/telegram/dialogue/phase` route. Existing apps can include `turn_router` and
+`dialogue_router` without migrating v1 routes.
 Version-one serialization, default values and receipt fingerprints remain
 unchanged. Version-two reservations freeze `ChatRequest` and `TurnContext` before
 the provider send, and use a separate `turns-v2` ledger. One structured provider
@@ -47,9 +48,47 @@ durably claims the update before releasing its state lock for the one account
 adapter. Duplicate updates cannot repeat an action. A returned result is shown
 only if its original conversation remains active. Static Gmail callbacks are
 checked against saved reply tokens, Telegram message IDs and conversation IDs.
-Only status, connect, list and disconnect map to callbacks; reading a message
-requires explicit `/gmail read ID`. No mail content is ingested into AI history,
-memory, summary or the journal. Previews and queries remain untrusted plain text.
+Only status, connect, list and disconnect map to callbacks. `/gmail read ID`
+returns a plain preview. Explicit read/list gestures may restore saved credentials
+and reverify the exact configured account, without opening browser authorization.
+Status remains local and does not prove a saved grant is currently valid.
+
+New installed dialogue turns use a separately marked v3 reservation. The first
+model phase either answers normally or proposes one readonly search/read tool.
+The bot executes the proposed tool for the authenticated owner; the API cannot
+create mailbox authority. Search reads one page of up to five previews; selected
+read accepts up to three stable references. A mail question uses at most two model
+calls; an ordinary answer uses one. The final phase has no tools. There is no
+automatic pagination, attachment download, URL fetch, sending or modification.
+Mail is read only for a current owner request or a clear selection follow-up.
+
+Each model phase and Google sub-operation is durably reserved before dispatch.
+The exact model payload and completed result are saved. Cancellation fences
+prevent later phases. Recovery reads receipts only; a cached tool proposal never
+starts a search or a final model phase. Missing/UNKNOWN authority is never rebuilt
+by repeating an external operation. V3 routing markers prevent fallback to v2.
+
+Mail data is untrusted provider input. Mail-tainted turns have no automatic memory
+updates, retain the clean general summary with a coverage gap, and exclude their
+history entries from later automatic context and memory preparation. Requested
+answers remain in Telegram and normal response receipts. Explicit owner actions
+such as saving an answer remain separate from automatic memory.
+
+Selections expire after 30 idle minutes or two hours total. Source-bearing turn
+snapshots are pruned after 24 hours on access and hourly maintenance; routing,
+UNKNOWN tombstones and final answers remain. The ledger allows at most 1024 roots
+and 1 MiB per root; it refuses new work instead of evicting replay protection.
+Preview data is capped at 16000 characters, the entire provider payload at 32000,
+and each provider response at 256 KiB. Ordinary runtime context reserves 8000
+characters for history, summary, persona and memories, yielding to the latest
+owner input when necessary. Very large input can still exceed the combined mail
+envelope and is rejected without a repair generation.
+
+Core replies reserve capacity for every unresolved request before new chat calls
+or local mutations. Missing state, missing receipt databases/tables and ambiguous
+partial storage fail closed. Valid legacy stores are adopted without rewriting
+their bytes. Keep continuity lock files with backups; whole-directory deletion
+and rollback of all authority and witnesses remain outside local detection.
 
 Local menus, callback notices, native command descriptions and labels use the
 English/Russian catalog. Translated labels preserve their opaque action IDs.

@@ -17,6 +17,7 @@ from tanya_bot.config import (
     api_key,
     client_token,
 )
+from tanya_bot.dialogue_api import dialogue_router
 from tanya_bot.errors import ServiceError
 from tanya_bot.media import enforce_plain_body_limit
 from tanya_bot.media_models import MEDIA_BODY_BYTES
@@ -66,6 +67,7 @@ def create_app(
     _ = application.exception_handler(ServiceError)(service_error_handler)
     application.add_api_route("/health", health, methods=["GET"])
     application.include_router(turn_router(state_directory, transport))
+    application.include_router(dialogue_router(state_directory, transport))
 
     @application.post("/v1/chat")
     async def chat(request: Request) -> ChatResponse:

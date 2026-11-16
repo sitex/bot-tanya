@@ -38,6 +38,7 @@ class MemoryCoordinator:
             cache = VectorCache(directory / f"rebuild-{uuid4().hex}")
         self.index: MemoryIndex = MemoryIndex(encoder, cache)
         self.limiter: anyio.CapacityLimiter = anyio.CapacityLimiter(1)
+        self.context_budget: int = CONTEXT_CHARACTERS
 
     async def prepare(
         self,
@@ -60,7 +61,8 @@ class MemoryCoordinator:
         fixed = len(text) + len(state.settings.name) + len(state.settings.language)
         fixed += state.settings.profile.context_size()
         summary = state.context.summary
-        allowance = max(0, CONTEXT_CHARACTERS - fixed)
+        budget = min(CONTEXT_CHARACTERS, max(self.context_budget, fixed))
+        allowance = max(0, budget - fixed)
         if len(summary.text) > allowance:
             summary = summary.model_copy(
                 update={
@@ -74,7 +76,10 @@ class MemoryCoordinator:
             }
         )
         prepared = build_request(
-            context_state, text, tuple(item.text for item in selected.records)
+            context_state,
+            text,
+            tuple(item.text for item in selected.records),
+            budget=budget,
         )
         prepared = prepared.model_copy(update={"request_id": request.request_id})
         amount = len(prepared.messages) - 1

@@ -152,6 +152,8 @@ class PendingChat(FrozenModel):
     reply_token: str | None = None
     cancelled: bool = False
     context: TurnContext | None = None
+    dialogue_version: Literal[3] | None = None
+    mail_tainted: bool = False
 
 
 class TelegramState(FrozenModel):

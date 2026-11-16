@@ -78,8 +78,7 @@ class CoreSession:
 
     def append(self, reply: StoredReply) -> None:
         """Reserve the result before attempting Telegram delivery."""
-        if len(self.state.replies) >= EVENT_CAPACITY:
-            raise CoreError(code="reply_capacity")
+        self.require_reply_capacity()
         updated = self.state.model_copy(
             update={"replies": (*self.state.replies, reply)}
         )
@@ -88,6 +87,15 @@ class CoreSession:
         if reply.setting_field is not None:
             updated = updated.model_copy(update={"settings_menu_token": reply.token})
         self.save(updated)
+
+    def require_reply_capacity(self, *, text: str | None = None) -> None:
+        """Include every unresolved hold, even cancelled or archived requests."""
+        slots = (
+            1 if text is None else (len(text) + TELEGRAM_CHUNK - 1) // TELEGRAM_CHUNK
+        )
+        promised = sum(item.response is None for item in self.state.requests)
+        if len(self.state.replies) + promised + slots > EVENT_CAPACITY:
+            raise CoreError(code="reply_capacity_admission")
 
     async def deliver(self, reply: StoredReply) -> None:
         """Attempt a send once; attach buttons only after saving the returned id."""
@@ -133,6 +141,7 @@ class CoreSession:
         setting_field: SettingField | None = None,
     ) -> None:
         """Publish untrusted plain text without translating or interpreting content."""
+        self.require_reply_capacity(text=text)
         for offset in range(0, len(text), TELEGRAM_CHUNK):
             reply = StoredReply(
                 conversation_id=self.state.conversation_id,

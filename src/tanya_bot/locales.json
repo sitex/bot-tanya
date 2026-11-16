@@ -1,5 +1,6 @@
 {
   "strings": {
+    "Storage is full or reserved for unresolved requests. No new chat request was sent.": "Хранилище заполнено или зарезервировано для запросов с неизвестным результатом. Новый запрос чата не отправлен.",
     "Gmail is not configured. Ask the host owner to set up Gmail.": "Gmail не настроен. Попросите владельца компьютера настроить Gmail.",
     "Gmail authorization is required. The host owner must explicitly authorize Google in the host browser, then use /gmail connect.": "Требуется авторизация Gmail. Владелец компьютера должен явно разрешить доступ Google в браузере компьютера, затем выполнить /gmail connect.",
     "Gmail commands: /gmail status, /gmail connect, /gmail list [query], /gmail read ID, /gmail disconnect.": "Команды Gmail: /gmail status, /gmail connect, /gmail list [запрос], /gmail read ID, /gmail disconnect.",
