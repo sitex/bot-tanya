@@ -67,6 +67,10 @@ The exact model payload and completed result are saved. Cancellation fences
 prevent later phases. Recovery reads receipts only; a cached tool proposal never
 starts a search or a final model phase. Missing/UNKNOWN authority is never rebuilt
 by repeating an external operation. V3 routing markers prevent fallback to v2.
+The API checks current core cancellation and owner authority atomically with its
+dispatch claim. Every nested acquisition takes core before sidecar; both locks
+are released before external I/O. A core cancellation remains effective even if
+the process dies before writing its sidecar fence.
 
 Mail data is untrusted provider input. Mail-tainted turns have no automatic memory
 updates, retain the clean general summary with a coverage gap, and exclude their
@@ -74,7 +78,8 @@ history entries from later automatic context and memory preparation. Requested
 answers remain in Telegram and normal response receipts. Explicit owner actions
 such as saving an answer remain separate from automatic memory.
 
-Selections expire after 30 idle minutes or two hours total. Source-bearing turn
+Selections expire after 30 idle minutes or two hours total. References are checked
+again after the decision and before every selected read. Source-bearing turn
 snapshots are pruned after 24 hours on access and hourly maintenance; routing,
 UNKNOWN tombstones and final answers remain. The ledger allows at most 1024 roots
 and 1 MiB per root; it refuses new work instead of evicting replay protection.

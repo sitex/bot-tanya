@@ -1,14 +1,15 @@
 """An owner-bound turn uses one decision and at most one mail finalization."""
 
 import time
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
 import anyio
-from tanya_memory import same_revision
 
 from tanya_bot.config import Settings
+from tanya_bot.dialogue_authority import authority
 from tanya_bot.dialogue_models import (
     DialoguePhase,
     DialogueRoot,
@@ -51,32 +52,18 @@ class DialogueRunner:
         """Share core authority without holding its lock across external work."""
         self.core: StateStore = core
         self.services: DialogueServices = services
-        self.tools: MailTools = MailTools(services.store, services.account, self.guard)
+        self.tools: MailTools = MailTools(
+            services.store, services.account, self.authority
+        )
+
+    def authority(self, root: DialogueRoot) -> AbstractContextManager[None]:
+        """Every nested acquisition follows core then sidecar ordering."""
+        return authority(self.core, root)
 
     def guard(self, root: DialogueRoot) -> None:
         """Reject cancelled, archived, changed or mismatched owner authority."""
-        with self.core.exclusive():
-            state = self.core.load()
-            pending = next(
-                (
-                    item
-                    for item in state.requests
-                    if item.request.request_id == root.turn.chat.request_id
-                ),
-                None,
-            )
-            if (
-                root.cancelled
-                or state.owner_id != root.owner_id
-                or state.conversation_id != root.conversation_id
-                or pending is None
-                or pending.cancelled
-                or pending.response is not None
-                or pending.request != root.turn.chat
-                or pending.context != root.turn.context
-                or not same_revision(state.context, root.turn.context)
-            ):
-                raise ServiceError(409, "dialogue_cancelled", "Turn authority expired.")
+        with self.authority(root):
+            pass
 
     def _prepare(self, request: ChatRequest) -> DialogueRoot:
         store = self.services.store
@@ -177,10 +164,15 @@ class DialogueRunner:
 
     def _finish(self, root_id: UUID, receipt: PhaseReceipt) -> TurnResponse:
         def finish(root: DialogueRoot) -> DialogueRoot:
-            self.guard(root)
+            if root.cancelled:
+                raise ServiceError(409, "dialogue_cancelled", "Turn is cancelled.")
             return assembled(root, receipt)
 
-        root = self.services.store.mutate(root_id, finish)
+        saved = self.services.store.load(root_id)
+        if saved is None:
+            raise ServiceError(409, "dialogue_missing", "Dialogue is unavailable.")
+        with self.authority(saved):
+            root = self.services.store.mutate(root_id, finish)
         if root.final is None:
             raise ServiceError(
                 502, "dialogue_invalid_final", "Final answer is unavailable."

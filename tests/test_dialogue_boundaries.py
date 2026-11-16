@@ -1,14 +1,21 @@
+import fcntl
 import threading
+import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import anyio
 import httpx2
 import pytest
 
+from tanya_bot.dialogue_models import DialoguePhase, DialogueRoot, PhaseAddress
 from tanya_bot.dialogue_sources import prune_sources, recent_selection
 from tanya_bot.errors import ServiceError
 from tanya_bot.gmail_commands import GmailCommands
+from tanya_bot.telegram_core_commands import cancelled_state
 from tanya_bot.telegram_gmail import GmailFlow
+from tanya_bot.turns import TurnRequest
 from tests.conftest import Harness
 from tests.dialogue_integration_support import attach, final_response, tool_response
 
@@ -133,3 +140,70 @@ async def test_invented_reference_never_reads_mail_or_starts_final(
     await context.rig.say("/recover")
     assert len(harness.wire.calls) == 1
     assert context.mail.paths == []
+
+
+async def test_core_cancel_survives_crash_before_sidecar_fence(
+    harness: Harness,
+    tmp_path: Path,
+) -> None:
+    context = attach(harness, tmp_path)
+    request = await context.rig.controller.begin_text(
+        context.rig.event("Read recent mail")
+    )
+    assert request is not None
+    pending = context.rig.disk.load().requests[-1]
+    assert pending.context is not None
+    context.store.create(
+        DialogueRoot(
+            turn=TurnRequest(chat=request, context=pending.context),
+            owner_id=42,
+            conversation_id=pending.conversation_id,
+            update_id=pending.update_id,
+            model="offline-model",
+            created_at=time.time(),
+            phases=(DialoguePhase(kind="decide"),),
+        )
+    )
+    with context.rig.disk.exclusive():
+        context.rig.disk.save(cancelled_state(context.rig.disk.load()))
+    harness.wire.outcomes.append(final_response())
+    async with harness.client() as client:
+        response = await client.post(
+            "/v3/telegram/dialogue/phase",
+            content=PhaseAddress(
+                root_id=request.request_id, kind="decide"
+            ).model_dump_json(),
+        )
+    assert response.status_code == 409
+    assert harness.wire.calls == []
+    assert context.mail.paths == []
+
+
+async def test_bot_never_acquires_core_while_holding_sidecar(
+    harness: Harness,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = attach(harness, tmp_path)
+    original = context.rig.disk.exclusive
+
+    @contextmanager
+    def exclusive() -> Generator[None]:
+        path = context.store.directory / "request.lock"
+        if path.exists():
+            with path.open("rb") as probe:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        with original():
+            yield
+
+    monkeypatch.setattr(context.rig.disk, "exclusive", exclusive)
+    harness.wire.outcomes.extend(
+        [
+            tool_response("gmail_search_read", {"query": "", "limit": 2}),
+            final_response(),
+        ]
+    )
+    await context.rig.say("Read my recent mail")
+    assert len(harness.wire.calls) == 2
+    assert len(context.mail.paths) == 5

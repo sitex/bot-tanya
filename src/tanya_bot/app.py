@@ -24,6 +24,7 @@ from tanya_bot.media_models import MEDIA_BODY_BYTES
 from tanya_bot.provider import generate, http_transport
 from tanya_bot.receipts import exclusive_store, lookup, mark_sent, save_success
 from tanya_bot.schemas import ChatRequest, ChatResponse, HealthResponse
+from tanya_bot.telegram_store import StateStore
 from tanya_bot.turn_api import turn_router
 
 
@@ -60,6 +61,8 @@ async def health() -> HealthResponse:
 def create_app(
     state_directory: Path = STATE_DIRECTORY,
     transport: httpx2.AsyncBaseTransport | None = None,
+    *,
+    dialogue_core: StateStore | None = None,
 ) -> FastAPI:
     """Build an isolated ASGI app, optionally using a local HTTP transport."""
     application = FastAPI(title="Tanya companion", docs_url=None, redoc_url=None)
@@ -67,7 +70,9 @@ def create_app(
     _ = application.exception_handler(ServiceError)(service_error_handler)
     application.add_api_route("/health", health, methods=["GET"])
     application.include_router(turn_router(state_directory, transport))
-    application.include_router(dialogue_router(state_directory, transport))
+    application.include_router(
+        dialogue_router(state_directory, transport, core=dialogue_core)
+    )
 
     @application.post("/v1/chat")
     async def chat(request: Request) -> ChatResponse:

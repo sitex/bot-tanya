@@ -3,6 +3,7 @@
 import hashlib
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from typing import assert_never
 from uuid import UUID
 
@@ -18,6 +19,7 @@ from tanya_bot.dialogue_models import (
     MailSearch,
     MailSource,
 )
+from tanya_bot.dialogue_sources import selection_valid
 from tanya_bot.dialogue_store import DialogueStore
 from tanya_bot.errors import ServiceError
 from tanya_bot.gmail_account import GmailAccount
@@ -30,16 +32,23 @@ class MailTools:
         self,
         store: DialogueStore,
         account: GmailAccount,
-        guard: Callable[[DialogueRoot], None],
+        authority: Callable[[DialogueRoot], AbstractContextManager[None]],
     ) -> None:
         """Keep mailbox execution in the bot, outside its primary state lock."""
         self.store: DialogueStore = store
         self.account: GmailAccount = account
-        self.guard: Callable[[DialogueRoot], None] = guard
+        self.authority: Callable[[DialogueRoot], AbstractContextManager[None]] = (
+            authority
+        )
+
+    def _guard(self, root: DialogueRoot) -> None:
+        with self.authority(root):
+            pass
 
     def _reserve(self, root_id: UUID, key: str) -> DialogueRoot:
         def reserve(root: DialogueRoot) -> DialogueRoot:
-            self.guard(root)
+            if root.cancelled:
+                raise ServiceError(409, "dialogue_cancelled", "Turn is cancelled.")
             if any(item.key == key for item in root.operations):
                 raise ServiceError(
                     409, "mail_operation_held", "Mail operation is held."
@@ -48,7 +57,11 @@ class MailTools:
                 update={"operations": (*root.operations, MailOperation(key=key))}
             )
 
-        return self.store.mutate(root_id, reserve)
+        saved = self.store.load(root_id)
+        if saved is None:
+            raise ServiceError(409, "dialogue_missing", "Dialogue is unavailable.")
+        with self.authority(saved):
+            return self.store.mutate(root_id, reserve)
 
     def _commit(self, root_id: UUID, operation: MailOperation) -> None:
         _ = self.store.mutate(
@@ -65,7 +78,7 @@ class MailTools:
 
     async def execute(self, root: DialogueRoot, call: MailCall) -> MailResult:
         """Validate selection membership; no model-supplied raw ID is executable."""
-        self.guard(root)
+        self._guard(root)
         sources: list[MailSource] = []
         query = ""
         more = False
@@ -86,6 +99,7 @@ class MailTools:
                     )
                     preview_limit = 2400
                 case MailRead(refs=refs):
+                    self._read_current(root)
                     selected = root.selection.result.sources if root.selection else ()
                     mapping = {item.ref: item.message_id for item in selected}
                     if len(set(refs)) != len(refs) or any(
@@ -99,8 +113,10 @@ class MailTools:
                 case _:
                     assert_never(call.action)
             for index, message_id in enumerate(ids):
+                if isinstance(call.action, MailRead):
+                    self._read_current(root)
                 current = self._reserve(root.turn.chat.request_id, f"read:{index}")
-                self.guard(current)
+                self._guard(current)
                 await anyio.lowlevel.checkpoint()
                 preview = await self.account.read(message_id, preview_limit)
                 source = MailSource(
@@ -130,7 +146,7 @@ class MailTools:
                     MailOperation(key=f"read:{index}", completed=True, source=source),
                 )
                 sources.append(source)
-                self.guard(current)
+                self._guard(current)
                 await anyio.lowlevel.checkpoint()
         except GmailError as error:
             return MailResult(
@@ -151,3 +167,14 @@ class MailTools:
             has_more=more,
             retrieved_at=time.time(),
         )
+
+    @staticmethod
+    def _read_current(root: DialogueRoot) -> None:
+        if root.selection is None:
+            raise ServiceError(
+                422, "mail_reference_invalid", "Select a current message."
+            )
+        if not selection_valid(root.selection, time.time()):
+            raise ServiceError(
+                409, "mail_reference_expired", "The mail selection expired."
+            )

@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from tanya_bot.app import create_app
 from tanya_bot.schemas import ChatRequest, Message
+from tanya_bot.telegram_store import TelegramStore
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +103,11 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Harness:
     monkeypatch.setenv("TOLAN_CLIENT_TOKEN_FILE", str(tmp_path / "client-token"))
     wire = Wire()
     directory = tmp_path / "state"
-    app = create_app(directory, httpx2.MockTransport(wire.handle))
+    app = create_app(
+        directory,
+        httpx2.MockTransport(wire.handle),
+        dialogue_core=TelegramStore(tmp_path / "core", 42),
+    )
     return Harness(directory, wire, app)
 
 

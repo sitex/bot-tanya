@@ -9,18 +9,23 @@ from pydantic import ValidationError
 
 from tanya_bot.authentication import authenticate
 from tanya_bot.config import Settings, api_key
+from tanya_bot.dialogue_authority import authority, configured_core
 from tanya_bot.dialogue_models import PhaseAddress, PhaseReceipt
 from tanya_bot.dialogue_provider import generate, payload
 from tanya_bot.dialogue_store import DialogueStore, phase_for, replace_phase
 from tanya_bot.errors import ServiceError
 from tanya_bot.provider import http_transport
 from tanya_bot.receipts import exclusive_store
+from tanya_bot.telegram_store import CoreError, StateStore
 
 PHASE_BODY_BYTES: Final = 4096
 
 
 def dialogue_router(
-    directory: Path, transport: httpx2.AsyncBaseTransport | None = None
+    directory: Path,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    *,
+    core: StateStore | None = None,
 ) -> APIRouter:
     """Only the bot's previously committed phase may dispatch one model call."""
     router = APIRouter()
@@ -50,7 +55,13 @@ def dialogue_router(
         if key is None:
             raise ServiceError(503, "api_key_missing", "Configure the provider key.")
         body = payload(root, address.kind)
-        _ = store.claim(address.root_id, address.kind, body)
+        try:
+            with authority(core or configured_core(), root):
+                _ = store.claim(address.root_id, address.kind, body)
+        except CoreError:
+            raise ServiceError(
+                503, "dialogue_authority_unavailable", "Core authority is unavailable."
+            ) from None
         try:
             result = await generate(body, key, transport or http_transport())
         except ServiceError as error:

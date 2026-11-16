@@ -23,10 +23,17 @@ def recent_selection(
         and root.selection is not None
         and root.selection.owner_id == owner
         and root.selection.conversation_id == conversation
-        and 0 <= now - root.selection.accessed_at <= IDLE_SECONDS
-        and 0 <= now - root.selection.created_at <= SELECTION_SECONDS
+        and selection_valid(root.selection, now)
     ]
     return max(candidates, key=lambda item: item.accessed_at, default=None)
+
+
+def selection_valid(selection: MailSelection, now: float) -> bool:
+    """Apply the same deadline both at admission and before selected reads."""
+    return (
+        0 <= now - selection.accessed_at <= IDLE_SECONDS
+        and 0 <= now - selection.created_at <= SELECTION_SECONDS
+    )
 
 
 def prune_sources(store: DialogueStore, now: float) -> None:
