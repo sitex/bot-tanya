@@ -36,10 +36,10 @@ def fingerprint(request: ChatRequest) -> str:
     ).hexdigest()
 
 
-def private_file(path: Path) -> int:
+def private_file(path: Path, *, flags: int = os.O_CREAT) -> int:
     """Create 0600 state files and refuse unsafe existing files."""
     descriptor = os.open(
-        path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, SECRET_MODE
+        path, os.O_RDWR | flags | os.O_NOFOLLOW | os.O_NONBLOCK, SECRET_MODE
     )
     metadata = os.fstat(descriptor)
     if (
@@ -52,6 +52,43 @@ def private_file(path: Path) -> int:
             503, "storage_unavailable", "Receipt requires owned 0600 file."
         )
     return descriptor
+
+
+def _sync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fresh_directory(directory: Path) -> bool:
+    return all(
+        p.name == "turns-v2" and stat.S_ISDIR(p.lstat().st_mode)
+        for p in directory.iterdir()
+        if p.name != "request.lock"
+    )
+
+
+def _prepare(connection: sqlite3.Connection, *, fresh: bool) -> None:
+    """Existing receipt authority must be readable before any schema creation."""
+    try:
+        if not fresh:
+            _ = connection.execute(
+                "SELECT request_id, digest, response FROM receipts LIMIT 0"
+            )
+        _ = connection.execute("PRAGMA journal_mode=DELETE")
+        _ = connection.execute("PRAGMA synchronous=FULL")
+        if fresh:
+            _ = connection.execute(
+                """CREATE TABLE receipts (
+                    request_id TEXT PRIMARY KEY, digest TEXT NOT NULL, response TEXT)"""
+            )
+            connection.commit()
+    except sqlite3.Error:
+        raise ServiceError(
+            503, "storage_unavailable", "Private request receipts are unavailable."
+        ) from None
 
 
 @contextmanager
@@ -71,25 +108,44 @@ def exclusive_store(directory: Path) -> Generator[sqlite3.Connection]:
         raise ServiceError(
             503, "storage_unavailable", "State requires owned 0700 folder."
         )
-    with os.fdopen(private_file(directory / "request.lock"), "rb") as lock:
+    # V2 may create the shared API parent before its independent V1 ledger exists.
+    fresh = _fresh_directory(directory)
+    try:
+        descriptor = private_file(
+            directory / "request.lock", flags=os.O_CREAT | os.O_EXCL
+        )
+    except FileExistsError:
+        descriptor = private_file(directory / "request.lock", flags=0)
+        fresh = False
+    with os.fdopen(descriptor, "rb") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ServiceError(
                 503, "server_busy", "Another chat request is in progress."
             ) from None
+        os.fsync(lock.fileno())
+        _sync_directory(directory)
+        fresh = fresh and _fresh_directory(directory)
         database = directory / "receipts.sqlite3"
-        with (
-            os.fdopen(private_file(database), "rb"),
-            closing(sqlite3.connect(database, timeout=0.1)) as connection,
-        ):
-            _ = connection.execute("PRAGMA journal_mode=DELETE")
-            _ = connection.execute("PRAGMA synchronous=FULL")
-            _ = connection.execute(
-                """CREATE TABLE IF NOT EXISTS receipts (
-                    request_id TEXT PRIMARY KEY, digest TEXT NOT NULL, response TEXT)"""
+        try:
+            descriptor = private_file(
+                database, flags=os.O_CREAT | os.O_EXCL if fresh else 0
             )
-            connection.commit()
+        except FileNotFoundError:
+            raise ServiceError(
+                503, "storage_unavailable", "Private request receipts are unavailable."
+            ) from None
+        with (
+            os.fdopen(descriptor, "rb"),
+            closing(
+                sqlite3.connect(
+                    f"{database.absolute().as_uri()}?mode=rw", uri=True, timeout=0.1
+                )
+            ) as connection,
+        ):
+            _prepare(connection, fresh=fresh)
+            _sync_directory(directory)
             yield connection
 
 

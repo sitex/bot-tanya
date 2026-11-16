@@ -44,7 +44,7 @@ class StateStore(Protocol):
         ...
 
     def load(self) -> TelegramState:
-        """Read validated state or return a fresh owner-bound state."""
+        """Read authority initialized under the exclusive transaction boundary."""
         ...
 
     def save(self, state: TelegramState) -> None:
@@ -74,7 +74,7 @@ class TelegramStore:
     def _open(path: Path, *, create: bool = False) -> int:
         flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
         if create:
-            flags |= os.O_CREAT
+            flags |= os.O_CREAT | os.O_EXCL
         fd = os.open(path, flags, FILE_MODE)
         info = os.fstat(fd)
         if (
@@ -89,24 +89,36 @@ class TelegramStore:
 
     @contextmanager
     def exclusive(self) -> Generator[None]:
-        """Keep the file lock across awaits; it never waits on another process."""
+        """Initialize empty stores and hold their continuity lock across awaits."""
         self._directory()
-        with os.fdopen(
-            self._open(self.directory / "state.lock", create=True), "rb"
-        ) as lock:
+        fresh = not any(self.directory.iterdir())
+        path = self.directory / "state.lock"
+        try:
+            descriptor = self._open(path, create=True)
+        except FileExistsError:
+            descriptor = self._open(path)
+            fresh = False
+        with os.fdopen(descriptor, "rb") as lock:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise CoreError(code="store_busy") from None
+            os.fsync(lock.fileno())
+            self._sync_directory()
+            if fresh and all(p.name == "state.lock" for p in self.directory.iterdir()):
+                self._commit(
+                    TelegramState(owner_id=self.owner_id).model_dump_json().encode()
+                )
+            _ = self.load()
             yield
 
     def load(self) -> TelegramState:
-        """Missing state is fresh; invalid or unsafe state never resets silently."""
+        """Missing, invalid or unsafe authority never resets silently."""
         self._directory()
         try:
             fd = self._open(self.directory / "state.json")
         except FileNotFoundError:
-            return TelegramState(owner_id=self.owner_id)
+            raise CoreError(code="state_missing") from None
         with os.fdopen(fd, "rb") as source:
             data = source.read(STATE_BYTES + 1)
         if len(data) > STATE_BYTES:
@@ -149,6 +161,21 @@ class TelegramStore:
         serialized = checked.model_dump_json().encode()
         if len(serialized) > STATE_BYTES:
             raise CoreError(code="state_capacity")
+        try:
+            with os.fdopen(self._open(self.directory / "state.json"), "rb"):
+                self._commit(serialized)
+        except FileNotFoundError:
+            raise CoreError(code="state_missing") from None
+
+    def _sync_directory(self) -> None:
+        fd = os.open(self.directory, os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _commit(self, serialized: bytes) -> None:
+        """Atomically persist authority after the continuity witness is durable."""
         path: Path | None = None
         try:
             with NamedTemporaryFile(
@@ -160,11 +187,7 @@ class TelegramStore:
                 out.flush()
                 os.fsync(out.fileno())
             _ = path.replace(self.directory / "state.json")
-            fd = os.open(self.directory, os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            self._sync_directory()
         finally:
             if path is not None:
                 path.unlink(missing_ok=True)
